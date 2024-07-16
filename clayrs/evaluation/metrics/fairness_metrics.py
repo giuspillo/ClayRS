@@ -6,7 +6,8 @@ from collections import Counter, defaultdict
 
 import pandas as pd
 import numpy as np
-from typing import Dict, Set, List, Union, TYPE_CHECKING
+from typing import Dict, Set, List, Union, TYPE_CHECKING, Callable
+import math
 
 if TYPE_CHECKING:
     from clayrs.content_analyzer import Ratings
@@ -16,6 +17,7 @@ from clayrs.evaluation.metrics.metrics import Metric
 from clayrs.evaluation.utils import get_avg_pop, pop_ratio_by_user, get_item_popularity, get_most_popular_items
 from clayrs.evaluation.exceptions import NotEnoughUsers
 from clayrs.utils.const import logger
+from clayrs.evaluation.metrics.metrics import Metric, handler_different_users
 
 
 class FairnessMetric(Metric):
@@ -24,7 +26,7 @@ class FairnessMetric(Metric):
     """
 
     @abstractmethod
-    def perform(self, split: Split):
+    def perform(self, split: Split, pop_per_item: Dict = None):
         raise NotImplementedError
 
 
@@ -185,20 +187,20 @@ class GiniIndex(FairnessMetric):
             'n' items of every recommendation list of all users. Default is None
     """
 
-    def __init__(self, top_n: int = None):
-        self.__top_n = top_n
+    def __init__(self, k: int = None):
+        self.__top_n = k
 
     def __str__(self):
         name = "Gini"
         if self.__top_n:
-            name += " - Top {}".format(self.__top_n)
+            name += "@{}".format(self.__top_n)
 
         return name
 
     def __repr__(self):
         return f'GiniIndex(top_n={self.__top_n})'
 
-    def perform(self, split: Split):
+    def perform(self, split: Split, pop_per_items: Dict):
         def gini(x: List):
             """
             Inner method which given a list of values, calculates the gini index
@@ -357,7 +359,7 @@ class CatalogCoverage(PredictionCoverage):
             their recommendation lists will be used to compute the CatalogCoverage
     """
 
-    def __init__(self, catalog: Set[str], top_n: int = None, k: int = None):
+    def __init__(self, catalog: Set[str]=None, top_n: int = None, k: int = None):
         super().__init__(catalog)
         self.__top_n = top_n
         self.__k = k
@@ -378,11 +380,13 @@ class CatalogCoverage(PredictionCoverage):
     def __repr__(self):
         return f'CatalogCoverage(catalog={self.catalog}, top_n={self.__top_n}, k={self.__k})'
 
-    def _get_covered(self, pred: Ratings):
+    def _get_covered(self, pred: Ratings, pop_per_items: Dict):
 
         # IF k is passed, then we choose randomly k users and calc catalog coverage
         # based on their predictions. We check that k is < n_user since if it's the equal
         # or it's greater, then all predictions generated for all user must be used
+        if self.catalog == None:
+            self.catalog = set(pop_per_items.keys())
         user_list = pred.unique_user_idx_column
         if self.__k is not None and self.__k < len(pred.unique_user_id_column):
 
@@ -573,5 +577,278 @@ class DeltaGap(GroupFairnessMetric):
             group_delta_gap = self.calculate_delta_gap(recs_gap=recs_gap, profile_gap=profile_gap)
 
             split_result['{} | {}'.format(str(self), group_name)].append(group_delta_gap)
+
+        return pd.DataFrame(split_result)
+
+
+
+class AvgPopularity(FairnessMetric):
+    def __init__(self, sys_average: str = 'macro',
+                 precision: [Callable] = np.float64):
+        valid_avg = {'macro', 'micro'}
+        self.__avg = sys_average.lower()
+        self.__precision = precision
+        
+    @property
+    def relevant_threshold(self):
+        return self.__relevant_threshold
+
+    @property
+    def sys_avg(self):
+        return self.__avg
+
+    @property
+    def precision(self):
+        return self.__precision
+    
+
+    def __str__(self):
+        return "AvgPopularity"
+    
+    def _perform_single_user(self, user_predictions_items: np.ndarray, pop_per_items: Dict):
+        user_popularity_item = np.vectorize(pop_per_items.get)(user_predictions_items)
+        return user_popularity_item
+
+
+    @handler_different_users
+    def perform(self, split: Split, pop_per_items: Dict) -> pd.DataFrame:
+        pred = split.pred
+        truth = split.truth
+        if pop_per_items == None:
+            raise ValueError(f'Popularity per Items not valid for metric {self}')
+
+        split_result = {'user_id': [], str(self): []}
+
+        user_idx_truth = truth.unique_user_idx_column
+        user_idx_pred = pred.user_map.convert_seq_str2int(truth.unique_user_id_column)
+
+        for uidx_pred, _ in zip(user_idx_pred, user_idx_truth):
+            user_predictions_idxs = pred.get_user_interactions(uidx_pred, as_indices=True)
+            user_predictions_items = pred.item_id_column[user_predictions_idxs]
+            metric_user = self._perform_single_user(user_predictions_items, pop_per_items)
+            split_result['user_id'].append(uidx_pred)
+            split_result[str(self)].append(metric_user)
+        split_result['user_id'] = list(pred.user_map.convert_seq_int2str(split_result['user_id']))
+        df_users = pd.DataFrame(split_result)
+        y = []
+        [y.extend(x.tolist()) for x in df_users[str(self)].tolist()]
+        sys_map = np.nanmean(np.array(list(map(lambda x: np.nan if x==None else x, y))))
+        df_sys = pd.DataFrame({'user_id': ['sys'], str(self): [sys_map]})
+        df = pd.concat([df_users, df_sys])
+        return df
+    
+
+class AvgPopularityAtK(AvgPopularity):
+    def __init__(self, k: int):
+        super().__init__()
+        self.k = k
+
+    def perform(self, split: Split, pop_per_items: Dict) -> pd.DataFrame:
+        pred = split.pred
+        truth = split.truth
+        if pop_per_items == None:
+            raise ValueError(f'Popularity per Items not valid for metric {self}')
+
+        split_result = {'user_id': [], str(self): []}
+
+        user_idx_truth = truth.unique_user_idx_column
+        user_idx_pred = pred.user_map.convert_seq_str2int(truth.unique_user_id_column)
+
+        for uidx_pred, _ in zip(user_idx_pred, user_idx_truth):
+            user_predictions_idxs = pred.get_user_interactions(uidx_pred, as_indices=True)
+            user_predictions_items = pred.item_id_column[user_predictions_idxs][:self.k]
+            metric_user = self._perform_single_user(user_predictions_items, pop_per_items)
+            split_result['user_id'].append(uidx_pred)
+            split_result[str(self)].append(metric_user)
+        split_result['user_id'] = list(pred.user_map.convert_seq_int2str(split_result['user_id']))
+        df_users = pd.DataFrame(split_result)
+        y = []
+        [y.extend(x.tolist()) for x in df_users[str(self)].tolist()]
+        sys_map = np.nanmean(np.array(list(map(lambda x: np.nan if x==None else x, y))))
+        df_sys = pd.DataFrame({'user_id': ['sys'], str(self): [sys_map]})
+        df = pd.concat([df_users, df_sys])
+        return df
+
+    def __str__(self):
+        return "AvgPopularity@{}".format(self.k)
+
+    def __repr__(self):
+        return "AvgPopularity@{}".format(self.k) 
+
+class EPC(FairnessMetric):
+    r"""
+    The Expected Popularity Complement (EPC) metric measures the average complement of popularity for recommended items.
+    It's a system wide metric, so only its result will be returned and not those of every user.
+    The metric is calculated as such:
+
+    $$
+    EPC = \frac{1}{N}\sum_{u \in U} \frac{1}{|rec_u|} \sum_{i \in rec_u} (1 - pop_i)
+    $$
+
+    Where:
+
+    - $N$ is the total number of users
+    - $rec_u$ is the set of recommended items for user $u$
+    - $pop_i$ is the popularity of item $i$, defined as the number of times it is rated divided by the total number of users
+
+    The popularity of an item is defined as the number of times it is rated in the `original_ratings` parameter
+    divided by the total number of users in the `original_ratings`.
+
+    Args:
+        original_ratings: `Ratings` object containing original interactions of the dataset that will be used to
+            compute the popularity of each item (i.e. the number of times it is rated divided by the total number of
+            users)
+        top_n: it's a cutoff parameter, if specified the EPC will be calculated considering only the first
+            'n' items of every recommendation list of all users. Default is None
+    """
+
+    def __init__(self, original_ratings: Ratings, ground_truth: Ratings, k: int = None):
+        self._pop_by_item = get_item_popularity(original_ratings)
+        self.__original_ratings = original_ratings
+        self.__ground_truth = ground_truth
+        self.__top_n = k
+
+    def __str__(self):
+        name = f"EPC@{self.__top_n}"
+        return name
+
+    def __repr__(self):
+        return f"ExpectedPopularityComplement(top_n={self.__top_n})"
+
+
+    def perform(self, split: Split, pop_per_items: Dict) -> pd.DataFrame:
+
+        # dict for results
+        split_result = {'user_id': [], str(self): []}
+
+        # filter only positive interactions to compute the relevance
+        train_interactions = self.__original_ratings.to_dataframe()
+
+        # compute item counts and relevant items
+        item_count = train_interactions['item_id'].value_counts().to_dict()
+        relevant_items = (self.__ground_truth
+                          .to_dataframe()
+                          .query('score == 1')
+                          .groupby('user_id')['item_id']
+                          .apply(set)
+                          .to_dict())
+        
+        # compute item novelty from training data
+        num_users = train_interactions['user_id'].nunique()
+        item_novelty_dict = {item: 1 - (count / num_users) for item, count in item_count.items()}
+        
+        # compute user item relevance
+        user_items = split.pred.to_dataframe().groupby('user_id')['item_id'].apply(list).to_dict()
+        
+        # precompute log_rank_disc values
+        max_rank = max(len(items) for items in user_items.values())
+        log_rank_disc = np.log2(range(2, max_rank + 2))
+        
+        # compute EPC user by user
+        EPCs = []
+        for user, items in user_items.items():
+            nov = 0
+            norm = 0
+            
+            for rank, item in enumerate(items):
+                relevance = 1 if item in relevant_items.get(user, set()) else 0
+                item_novelty = item_novelty_dict.get(item, 1)
+                disc = 1 / log_rank_disc[rank]
+                
+                nov += relevance * disc * item_novelty
+                norm += disc
+            
+            if norm > 0:
+                nov /= norm
+            
+            EPCs.append(nov)
+
+            # save EPC per user
+            split_result['user_id'].append(user)
+            split_result[str(self)].append(nov)
+        
+        # compute sys EPC
+        sys_epc = np.mean(EPCs)
+        split_result['user_id'].append('sys')
+        split_result[str(self)].append(sys_epc)
+
+        return pd.DataFrame(split_result)
+        
+        # return pd.DataFrame({'user_id': ['sys'], str(self): [epc]})
+
+class APLT(FairnessMetric):
+    r"""
+    The Average Percentage of Long Tail (APLT) metric measures the proportion of long-tail items in the recommendations.
+    It's a system-wide metric, so only its result will be returned and not those of every user.
+    The metric is calculated as such:
+
+    $$
+    APLT = \frac{1}{N}\sum_{u \in U} \frac{|LT_u|}{|rec_u|}
+    $$
+
+    Where:
+
+    - $N$ is the total number of users
+    - $rec_u$ is the set of recommended items for user $u$
+    - $LT_u$ is the set of long-tail items recommended to user $u$
+
+    A long-tail item is defined as an item whose popularity is below a specified threshold.
+    The popularity of an item is defined as the number of times it is rated in the `original_ratings` parameter
+    divided by the total number of users in the `original_ratings`.
+
+    Args:
+        original_ratings: `Ratings` object containing original interactions of the dataset that will be used to
+            compute the popularity of each item (i.e. the number of times it is rated divided by the total number of
+            users)
+        top_n: it's a cutoff parameter, if specified the APLT will be calculated considering only the first
+            'n' items of every recommendation list of all users. Default is None
+        long_tail_threshold: popularity threshold below which items are considered long-tail. Default is 0.8
+    """
+
+    def __init__(self, original_ratings: Ratings, k: int = None, long_tail_threshold: float = 0.8):
+        self.__top_n = k
+        self.__long_tail_threshold = long_tail_threshold
+        self.__original_ratings = original_ratings
+
+    def __str__(self):
+        name = f"APLT@{self.__top_n}"
+        return name
+
+    def __repr__(self):
+        return f"AveragePercentageLongTail(long_tail_threshold={self.__long_tail_threshold})"
+
+    def perform(self, split: Split, pop_per_items: Dict) -> pd.DataFrame:
+
+        # dict for results
+        split_result = {'user_id': [], str(self): []}
+        
+        # get predictions
+        predictions = split.pred.to_dataframe()
+        
+        # Compute item popularities
+        item_pop = self.__original_ratings.to_dataframe()['item_id'].value_counts()
+        max_pop = item_pop.max()
+
+        # Find the head items and long tail items
+        sorted_item_occurrences = item_pop.sort_values(ascending=False)
+        cumulative_occurrences = sorted_item_occurrences.cumsum()
+        total_occurrences = cumulative_occurrences.iloc[-1]
+        threshold_occurrences = self.__long_tail_threshold * total_occurrences
+        threshold_index = cumulative_occurrences.searchsorted(threshold_occurrences, side='right')
+        head_items_list = sorted_item_occurrences.index[:threshold_index + 1].tolist()
+        long_tail_items = set(item_pop.index) - set(head_items_list)
+        
+        # Compute APLT per user and then average
+        user_items = predictions.groupby('user_id')['item_id'].apply(list)
+        user_aplts = user_items.apply(lambda items: len(set(items[:self.__top_n]) & long_tail_items) / len(set(items[:self.__top_n])) if items else 0)
+        
+        # save APLTs per user
+        split_result['user_id'] = list(user_items.keys())
+        split_result[str(self)] = list(user_aplts)
+
+        # compute system APLT
+        sys_aplt = user_aplts.mean()
+        split_result['user_id'].append('sys')
+        split_result[str(self)].append(sys_aplt)
 
         return pd.DataFrame(split_result)

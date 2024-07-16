@@ -48,7 +48,9 @@ class StatisticalTest(ABC):
 
 class PairedTest(StatisticalTest):
 
-    def perform(self, df_list: List[pd.DataFrame]) -> pd.DataFrame:
+    def perform(self, df_list: List[pd.DataFrame], names: List[str]) -> pd.DataFrame:
+
+        print(names)
         """
         Method which performs the chosen paired statistical test.
 
@@ -109,7 +111,7 @@ class PairedTest(StatisticalTest):
             df1 = df_list_reset.pop(0)
             user_id_col1 = user_id_column.pop(0)
             for i, (user_id_col2, other_df) in enumerate(zip(user_id_column, df_list_reset),
-                                                         start=n_system_evaluated + 1):
+                                                         start=n_system_evaluated+1):
 
                 common_metrics = [column for column in df1.columns
                                   if column != user_id_col1 and column in other_df.columns]
@@ -127,8 +129,8 @@ class PairedTest(StatisticalTest):
 
                     statistic, pvalue = self._perform_test(score_system1, score_system2)
 
-                    data[(f"system_{n_system_evaluated}", f"system_{i}")][str(metric)]["statistic"] = statistic
-                    data[(f"system_{n_system_evaluated}", f"system_{i}")][str(metric)]["pvalue"] = pvalue
+                    data[(f"{names[n_system_evaluated-1]}", f"{names[i-1]}")][str(metric)]["statistic"] = statistic
+                    data[(f"{names[n_system_evaluated-1]}", f"{names[i-1]}")][str(metric)]["pvalue"] = pvalue
 
             n_system_evaluated += 1
 

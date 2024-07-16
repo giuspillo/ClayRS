@@ -202,6 +202,7 @@ class NDCGAtK(NDCG):
 
         actual = self._dcg_score(actual_r)
         ideal = self._dcg_score(ideal_r)
+
         return actual / ideal
 
 
