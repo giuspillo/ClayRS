@@ -7,10 +7,7 @@ from collections import Counter, defaultdict
 import pandas as pd
 import numpy as np
 from typing import Dict, Set, List, Union, TYPE_CHECKING, Callable
-<<<<<<< HEAD
 import math
-=======
->>>>>>> e4cd5423b39a3cdbda2f9558949c3e1c304678a0
 
 if TYPE_CHECKING:
     from clayrs.content_analyzer import Ratings
