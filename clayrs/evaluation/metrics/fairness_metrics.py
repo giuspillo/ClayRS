@@ -7,7 +7,10 @@ from collections import Counter, defaultdict
 import pandas as pd
 import numpy as np
 from typing import Dict, Set, List, Union, TYPE_CHECKING, Callable
+<<<<<<< HEAD
 import math
+=======
+>>>>>>> e4cd5423b39a3cdbda2f9558949c3e1c304678a0
 
 if TYPE_CHECKING:
     from clayrs.content_analyzer import Ratings
@@ -673,6 +676,7 @@ class AvgPopularityAtK(AvgPopularity):
         return "AvgPopularity@{}".format(self.k)
 
     def __repr__(self):
+<<<<<<< HEAD
         return "AvgPopularity@{}".format(self.k) 
 
 class EPC(FairnessMetric):
@@ -852,3 +856,6 @@ class APLT(FairnessMetric):
         split_result[str(self)].append(sys_aplt)
 
         return pd.DataFrame(split_result)
+=======
+        return "AvgPopularity@{}".format(self.k) 
+>>>>>>> e4cd5423b39a3cdbda2f9558949c3e1c304678a0
