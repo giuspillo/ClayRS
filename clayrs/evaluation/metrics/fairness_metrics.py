@@ -673,7 +673,6 @@ class AvgPopularityAtK(AvgPopularity):
         return "AvgPopularity@{}".format(self.k)
 
     def __repr__(self):
-<<<<<<< HEAD
         return "AvgPopularity@{}".format(self.k) 
 
 class EPC(FairnessMetric):
@@ -852,7 +851,5 @@ class APLT(FairnessMetric):
         split_result['user_id'].append('sys')
         split_result[str(self)].append(sys_aplt)
 
-        return pd.DataFrame(split_result)
-=======
+        # return pd.DataFrame(split_result)
         return "AvgPopularity@{}".format(self.k) 
->>>>>>> e4cd5423b39a3cdbda2f9558949c3e1c304678a0
