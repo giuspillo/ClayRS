@@ -851,5 +851,5 @@ class APLT(FairnessMetric):
         split_result['user_id'].append('sys')
         split_result[str(self)].append(sys_aplt)
 
-        # return pd.DataFrame(split_result)
-        return "AvgPopularity@{}".format(self.k) 
+        return pd.DataFrame(split_result)
+        # return "AvgPopularity@{}".format(self.k) 
